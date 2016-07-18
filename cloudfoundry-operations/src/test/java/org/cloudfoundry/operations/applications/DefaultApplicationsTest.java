@@ -716,7 +716,8 @@ public final class DefaultApplicationsTest {
                     .logMessage(fill(LogMessage.builder(), "log-message-")
                         .build())
                     .origin("rsp")
-                    .build()));
+                    .build())
+                .log("stream.mock"));
     }
 
     private static void requestOrganizationSpacesByName(CloudFoundryClient cloudFoundryClient, String organizationId, String space) {
@@ -2474,7 +2475,6 @@ public final class DefaultApplicationsTest {
     public static final class LogsRecentNotSet extends AbstractOperationsApiTest<LogMessage> {
 
         private final DefaultApplications applications = new DefaultApplications(Mono.just(this.cloudFoundryClient), Mono.just(this.dopplerClient), Mono.just(TEST_SPACE_ID));
-
 
         @Before
         public void setUp() throws Exception {

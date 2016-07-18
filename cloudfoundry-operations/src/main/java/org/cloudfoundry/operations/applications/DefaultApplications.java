@@ -666,7 +666,9 @@ public final class DefaultApplications implements Applications {
             return requestLogsStream(dopplerClient, applicationId)
                 .filter(e -> EventType.LOG_MESSAGE == e.getEventType())
                 .map(Envelope::getLogMessage)
-                .compose(source -> SortingUtils.timespan(source, LOG_MESSAGE_COMPARATOR, LOG_MESSAGE_TIMESPAN));
+                .log("stream.beforeSort")
+                .compose(source -> SortingUtils.timespan(source, LOG_MESSAGE_COMPARATOR, LOG_MESSAGE_TIMESPAN))
+                .log("stream.afterSort");
         }
     }
 

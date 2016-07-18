@@ -72,11 +72,15 @@ public final class SortingUtils {
         }
 
         private SortingAccumulator<T> accumulate(Flux<Tuple2<Long, T>> source) {
-            source.subscribe(this.queue::add);
+            source.subscribe((e) -> {
+                System.out.println("ADD");
+                this.queue.add(e);
+            });
             return this;
         }
 
         private Flux<T> drain() {
+            System.out.println("DRAIN");
             return Flux.fromIterable(() -> new TemporallyLimitedIterator<>(this.queue, Duration.ZERO));
         }
 
