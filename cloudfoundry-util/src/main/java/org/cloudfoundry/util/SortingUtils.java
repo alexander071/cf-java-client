@@ -28,6 +28,7 @@ import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.Spliterator;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
@@ -43,21 +44,22 @@ public final class SortingUtils {
      * Sorts the elements of a {@link Flux} within a sliding time window.  This sorter should be used when element order may be scrambled, but that scrambling has a certain 'temporal locality' to it.
      * This assumption means that sorting can be limited to elements that arrive temporally close to one another without risking a latecomer being sorted incorrectly.
      *
-     * @param source     a {@link Flux} providing elements whose order may be scrambled
      * @param comparator a {@link Comparator} to use when sorting the elements within the window
      * @param timespan   the duration of the 'temporal locality'
      * @param <T>        The type of the elements to be sorted
      * @return a {@link Flux} providing the sorted elements
      */
-    public static <T> Flux<T> timespan(Flux<T> source, Comparator<T> comparator, Duration timespan) {
-        SortingAccumulator<T> accumulator = new SortingAccumulator<>(comparator, timespan);
+    public static <T> Function<Flux<T>, Flux<T>> timespan(Comparator<T> comparator, Duration timespan) {
+        return source -> {
+            SortingAccumulator<T> accumulator = new SortingAccumulator<>(comparator, timespan);
 
-        return source
-            .timestamp()
-            .window(timespan)
-            .scan(accumulator, SortingAccumulator::accumulate)
-            .concatMap(SortingAccumulator::getReleased)
-            .concatWith(accumulator.drain());
+            return source
+                .timestamp()
+                .window(timespan)
+                .scan(accumulator, SortingAccumulator::accumulate)
+                .concatMap(SortingAccumulator::getReleased)
+                .concatWith(accumulator.drain());
+        };
     }
 
     private static final class SortingAccumulator<T> {
@@ -72,15 +74,13 @@ public final class SortingUtils {
         }
 
         private SortingAccumulator<T> accumulate(Flux<Tuple2<Long, T>> source) {
-            source.subscribe((e) -> {
-                System.out.println("ADD");
-                this.queue.add(e);
-            });
+            source
+                .log("stream.accumulate")
+                .subscribe(this.queue::add);
             return this;
         }
 
         private Flux<T> drain() {
-            System.out.println("DRAIN");
             return Flux.fromIterable(() -> new TemporallyLimitedIterator<>(this.queue, Duration.ZERO));
         }
 
@@ -289,6 +289,7 @@ public final class SortingUtils {
 
         @Override
         public boolean hasNext() {
+            System.out.println("HAS NEXT");
             Tuple2<Long, T> candidate = this.queue.peek();
             return candidate != null && Instant.ofEpochMilli(candidate.t1).isBefore(Instant.now().minus(this.timespan));
         }

@@ -667,7 +667,7 @@ public final class DefaultApplications implements Applications {
                 .filter(e -> EventType.LOG_MESSAGE == e.getEventType())
                 .map(Envelope::getLogMessage)
                 .log("stream.beforeSort")
-                .compose(source -> SortingUtils.timespan(source, LOG_MESSAGE_COMPARATOR, LOG_MESSAGE_TIMESPAN))
+                .compose(SortingUtils.timespan(LOG_MESSAGE_COMPARATOR, LOG_MESSAGE_TIMESPAN))
                 .log("stream.afterSort");
         }
     }
