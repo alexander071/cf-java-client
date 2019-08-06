@@ -16,17 +16,10 @@
 
 package org.cloudfoundry.reactor.util;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.http.DefaultHttpHeaders;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.util.AsciiString;
-import reactor.core.Exceptions;
-import reactor.core.publisher.Mono;
-import reactor.ipc.netty.NettyOutbound;
-import reactor.ipc.netty.http.client.HttpClientRequest;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_DISPOSITION;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
+import static io.netty.handler.codec.http.HttpHeaderValues.MULTIPART_FORM_DATA;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -39,15 +32,27 @@ import java.util.Random;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_DISPOSITION;
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
-import static io.netty.handler.codec.http.HttpHeaderValues.MULTIPART_FORM_DATA;
+import org.reactivestreams.Publisher;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.DefaultHttpHeaders;
+import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.util.AsciiString;
+import reactor.core.Exceptions;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.netty.NettyOutbound;
+import reactor.netty.http.client.HttpClientRequest;
 
 public final class MultipartHttpClientRequest {
 
-    private static final byte[] BOUNDARY_CHARS = new byte[]{'-', '_', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
-        'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'};
+    private static final byte[] BOUNDARY_CHARS = new byte[]{'-', '_', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 'b', 'c',
+        'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C',
+        'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'};
 
     private static final AsciiString BOUNDARY_PREAMBLE = MULTIPART_FORM_DATA.concat("; boundary=");
 
@@ -63,9 +68,12 @@ public final class MultipartHttpClientRequest {
 
     private final HttpClientRequest request;
 
-    public MultipartHttpClientRequest(ObjectMapper objectMapper, HttpClientRequest request) {
+    private NettyOutbound outbound;
+
+    public MultipartHttpClientRequest(ObjectMapper objectMapper, HttpClientRequest request, NettyOutbound outbound) {
         this.objectMapper = objectMapper;
         this.request = request;
+        this.outbound = outbound;
     }
 
     public MultipartHttpClientRequest addPart(Consumer<PartHttpClientRequest> partConsumer) {
@@ -73,7 +81,7 @@ public final class MultipartHttpClientRequest {
         return this;
     }
 
-    public Mono<Void> done() {
+    public Publisher<Void> done() {
         AsciiString boundary = generateMultipartBoundary();
         AsciiString delimiter = getDelimiter(boundary);
         AsciiString closeDelimiter = getCloseDelimiter(boundary);
@@ -88,25 +96,21 @@ public final class MultipartHttpClientRequest {
 
         Long contentLength = parts.stream()
             .mapToLong(part -> delimiter.length() + CRLF.length() + part.getLength())
-            .sum() + closeDelimiter.length();
+            .sum()
+            + closeDelimiter.length();
 
-        NettyOutbound intermediateRequest = this.request
-            .chunkedTransfer(false)
-            .header(CONTENT_TYPE, BOUNDARY_PREAMBLE.concat(boundary))
+        this.request.header(CONTENT_TYPE, BOUNDARY_PREAMBLE.concat(boundary))
             .header(CONTENT_LENGTH, String.valueOf(contentLength));
 
         for (PartHttpClientRequest part : parts) {
-            intermediateRequest = intermediateRequest.sendObject(Unpooled.wrappedBuffer(delimiter.toByteArray()));
-            intermediateRequest = intermediateRequest.sendObject(Unpooled.wrappedBuffer(CRLF.toByteArray()));
-            intermediateRequest = intermediateRequest.sendObject(part.renderedHeaders);
-            intermediateRequest = part.sendPayload(intermediateRequest);
+            outbound = outbound.send(wrap(delimiter));
+            outbound = outbound.send(wrap(CRLF));
+            outbound = outbound.send(wrap(part.renderedHeaders));
+            outbound = part.sendPayload(outbound);
         }
-
-        intermediateRequest = intermediateRequest.sendObject(Unpooled.wrappedBuffer(closeDelimiter.toByteArray()));
-
-        return intermediateRequest
-            .then();
+        return outbound.send(wrap(closeDelimiter));
     }
+
 
     private static AsciiString generateMultipartBoundary() {
         byte[] boundary = new byte[RND.nextInt(11) + 30];
@@ -117,11 +121,22 @@ public final class MultipartHttpClientRequest {
     }
 
     private static AsciiString getCloseDelimiter(AsciiString boundary) {
-        return CRLF.concat(DOUBLE_DASH).concat(boundary).concat(DOUBLE_DASH);
+        return CRLF.concat(DOUBLE_DASH)
+            .concat(boundary)
+            .concat(DOUBLE_DASH);
     }
 
     private static AsciiString getDelimiter(AsciiString boundary) {
-        return CRLF.concat(DOUBLE_DASH).concat(boundary);
+        return CRLF.concat(DOUBLE_DASH)
+            .concat(boundary);
+    }
+
+    private static Flux<ByteBuf> wrap(AsciiString content) {
+        return Flux.just(Unpooled.wrappedBuffer(content.toByteArray()));
+    }
+
+    private static Flux<ByteBuf> wrap(ByteBuf content) {
+        return Flux.just(content);
     }
 
     public static final class PartHttpClientRequest {
@@ -168,10 +183,13 @@ public final class MultipartHttpClientRequest {
         }
 
         public PartHttpClientRequest setContentDispositionFormData(String name, String filename) {
-            AsciiString s = new AsciiString("form-data; name=\"").concat(name).concat("\"");
+            AsciiString s = new AsciiString("form-data; name=\"").concat(name)
+                .concat("\"");
 
             if (filename != null) {
-                s = s.concat("; filename=\"").concat(filename).concat("\"");
+                s = s.concat("; filename=\"")
+                    .concat(filename)
+                    .concat("\"");
             }
 
             this.headers.set(CONTENT_DISPOSITION, s);
@@ -202,9 +220,12 @@ public final class MultipartHttpClientRequest {
         }
 
         private ByteBuf renderHeaders() {
-            AsciiString s = this.headers.entries().stream()
+            AsciiString s = this.headers.entries()
+                .stream()
                 .sorted(Comparator.comparing(Map.Entry::getKey))
-                .map(entry -> new AsciiString(entry.getKey()).concat(HEADER_DELIMITER).concat(entry.getValue()).concat(CRLF))
+                .map(entry -> new AsciiString(entry.getKey()).concat(HEADER_DELIMITER)
+                    .concat(entry.getValue())
+                    .concat(CRLF))
                 .reduce(AsciiString::concat)
                 .orElse(AsciiString.EMPTY_STRING)
                 .concat(CRLF);
@@ -212,14 +233,13 @@ public final class MultipartHttpClientRequest {
             return Unpooled.wrappedBuffer(s.toByteArray());
         }
 
-        private NettyOutbound sendPayload(NettyOutbound request) {
+        private NettyOutbound sendPayload(NettyOutbound outbound) {
             if (this.file != null) {
-                return request.sendFile(this.file);
+                return outbound.sendFile(this.file);
             } else if (this.payload != null) {
-                return request.sendByteArray(Mono.just(this.payload));
-            } else {
-                return request;
+                return outbound.send(Mono.just(Unpooled.wrappedBuffer(this.payload)));
             }
+            return outbound;
         }
     }
 
